@@ -47,10 +47,10 @@ from inception import InceptionV3
 
 
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-parser.add_argument('path', type=str, nargs=2,
+parser.add_argument('--path', type=str, nargs=2,
                     help=('Path to the generated images or '
                           'to .npz statistic files'))
-parser.add_argument('--batch-size', type=int, default=64,
+parser.add_argument('--batch-size', type=int, default=256,
                     help='Batch size to use')
 parser.add_argument('--dims', type=int, default=2048,
                     choices=list(InceptionV3.BLOCK_INDEX_BY_DIM),
@@ -87,12 +87,14 @@ def get_activations(images, model, batch_size=64, dims=2048,
         print(('Warning: batch size is bigger than the data size. '
                'Setting batch size to data size'))
         batch_size = d0
-
+    print("In total %d images" % d0)
     n_batches = d0 // batch_size
+    print("In total %d batches" % n_batches)
     n_used_imgs = n_batches * batch_size
 
     pred_arr = np.empty((n_used_imgs, dims))
     for i in range(n_batches):
+        print("%d batch" % i)
         if verbose:
             print('\rPropagating batch %d/%d' % (i + 1, n_batches),
                   end='', flush=True)
@@ -202,25 +204,30 @@ def calculate_activation_statistics(images, model, batch_size=64,
     return mu, sigma
 
 
-def _compute_statistics_of_path(path, model, batch_size, dims, cuda):
+def _compute_statistics_of_path(type,path, model, batch_size, dims, cuda):
     if path.endswith('.npz'):
         f = np.load(path)
-        m, s = f['mu'][:], f['sigma'][:]
+        m, s = f['m'][:], f['s'][:]
         f.close()
     else:
         path = pathlib.Path(path)
         files = list(path.glob('*.jpg')) + list(path.glob('*.png'))
 
         imgs = np.array([imread(str(fn)).astype(np.float32) for fn in files])
+        shape = imgs.shape
 
         # Bring images to shape (B, 3, H, W)
+        #imgs = imgs.transpose((0, 1, 2))
+        #imgs = imgs.reshape(shape[0],1,shape[1],shape[2])
         imgs = imgs.transpose((0, 3, 1, 2))
-
+        print(imgs.shape)
         # Rescale images to be between 0 and 1
         imgs /= 255
 
-        m, s = calculate_activation_statistics(imgs, model, batch_size,
-                                               dims, cuda)
+        m, s = calculate_activation_statistics(imgs, model, batch_size, dims, cuda)
+        print("m & s calculated!")
+        outfile = str(path) + "/images_stats.npz"
+        np.savez(outfile,m=m,s=s)
 
     return m, s
 
@@ -234,12 +241,11 @@ def calculate_fid_given_paths(paths, batch_size, cuda, dims):
     block_idx = InceptionV3.BLOCK_INDEX_BY_DIM[dims]
 
     model = InceptionV3([block_idx])
-    if cuda:
-        model.cuda()
+    model.cuda()
 
-    m1, s1 = _compute_statistics_of_path(paths[0], model, batch_size,
-                                         dims, cuda)
-    m2, s2 = _compute_statistics_of_path(paths[1], model, batch_size,
+    m1, s1 = _compute_statistics_of_path('original',paths[0], model, batch_size,
+                                         dims, cuda) 
+    m2, s2 = _compute_statistics_of_path('val',paths[1], model, batch_size,
                                          dims, cuda)
     fid_value = calculate_frechet_distance(m1, s1, m2, s2)
 

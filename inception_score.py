@@ -65,7 +65,7 @@ if __name__ == '__main__':
     # python inception_score.py --dataroot=$DATA/celeb/ --gpuid=4
     # python inception_score.py --dataroot=bwn_generated_imgs/ --gpuid=4
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataroot', default=" ", help='path to dataset')
+    parser.add_argument('--dataroot', default=" ", help='path to dataset') #5w
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=8)
     parser.add_argument('--gpuid',type=int,default=4,help="gpu id")
 
@@ -73,7 +73,7 @@ if __name__ == '__main__':
     print(opt)    
     my_images = dset.ImageFolder(root=opt.dataroot, 
                              transform=transforms.Compose([
-                                 transforms.Resize(64),
+                                 transforms.Resize(32),
                                  transforms.ToTensor(),
                                  transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                              ]))

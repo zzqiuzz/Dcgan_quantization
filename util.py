@@ -42,24 +42,30 @@ class Quan_D():
                     torch.round(self.target_modules[index].data.mul_(coe)).div(coe)
             
 class Bin_G():
-    def __init__(self, model,bin_type):
+    def __init__(self, model,model_type,quan_type,bit):
         # count the number of Conv2d and Linear
         count_targets = 0
+        self.bit = bit
+        self.quan_type = quan_type
         for m in model.modules():
-            if bin_type == "bin_G":
+            if model_type == "bin_G":
                 if isinstance(m, nn.ConvTranspose2d):
                     count_targets = count_targets + 1
-            elif bin_type == "bin_D":
+            elif model_type == "bin_G_extra":
+                if isinstance(m,nn.Conv2d):
+                    count_targets = count_targets + 1
+            elif model_type == "bin_D":
                 if isinstance(m, nn.Conv2d):
                     count_targets = count_targets + 1
-            elif bin_type == "bin_G_depth":
+            elif model_type == "bin_G_depth":
                 if isinstance(m, nn.Conv2d):
                     count_targets = count_targets + 1
         start_range = 1
         end_range = count_targets-2
-        if bin_type == 'bin_G_depth':
+        if model_type == 'bin_G_depth' or model_type == "bin_G_extra":
             flag = False
             end_range = count_targets # 这里量化三层, end_range=count_targets - 3 则量化一层  效果还可以 
+         
         self.bin_range = numpy.linspace(start_range,
                 end_range, end_range-start_range+1)\
                         .astype('int').tolist()
@@ -67,24 +73,24 @@ class Bin_G():
         self.saved_params = [] 
         self.target_modules = []
         index = -1
-        if bin_type == 'bin_G_depth':
+        if model_type == 'bin_G_depth' or model_type == "bin_G_extra":
             index = 0
         for m in model.modules():
-            if bin_type == "bin_G":
+            if model_type == "bin_G" :
                 if isinstance(m, nn.ConvTranspose2d):
                     index = index + 1
                     if index in self.bin_range:
                         tmp = m.weight.data.clone()
                         self.saved_params.append(tmp)
                         self.target_modules.append(m.weight)
-            elif bin_type == "bin_D":
+            elif model_type == "bin_D" or model_type == "bin_G_extra":
                 if isinstance(m, nn.Conv2d):
                     index = index + 1
                     if index in self.bin_range:
                         tmp = m.weight.data.clone()
                         self.saved_params.append(tmp)
                         self.target_modules.append(m.weight)
-            elif bin_type == "bin_G_depth":
+            elif model_type == "bin_G_depth":
                 if isinstance(m, nn.Conv2d):
                     #if not flag:
                     #    flag = True
@@ -120,17 +126,44 @@ class Bin_G():
 
     def binarizeConvParams(self):
         for index in range(self.num_of_params):
-            n = self.target_modules[index].data[0].nelement()
+            #n = self.target_modules[index].data[0].nelement()
+            n = self.target_modules[index].data[:,0,:,:].nelement()
             s = self.target_modules[index].data.size()
-            '''if len(s) == 4:
-                m = self.target_modules[index].data.norm(1, 3, keepdim=True)\
-                        .sum(2, keepdim=True).sum(1, keepdim=True).div(n)
-            elif len(s) == 2:
-                m = self.target_modules[index].data.norm(1, 1, keepdim=True).div(n)
-            self.target_modules[index].data = \
-                    self.target_modules[index].data.sign().mul(m.expand(s))'''
-            coe = 255 # n bit quantization
-            self.target_modules[index].data.mul_(coe).round_().div_(coe)
+            if self.bit == 1:
+                if len(s) == 4:
+                    m = self.target_modules[index].data.norm(1, 3, keepdim=True)\
+                            .sum(2, keepdim=True).sum(0, keepdim=True).div(n)
+                elif len(s) == 2:
+                    m = self.target_modules[index].data.norm(1, 1, keepdim=True).div(n)
+                self.target_modules[index].data = \
+                        self.target_modules[index].data.sign().mul(m.expand(s))
+            elif self.bit > 1:
+                if self.quan_type == 'default':
+                    coe = torch.pow(2,torch.tensor(self.bit)) - 1 # n bit quantization
+                    self.target_modules[index].data.mul_(coe).round_().div_(coe)
+                elif self.quan_type == 'jacob':
+                    rimax = torch.max(self.target_modules[index].data)
+                    rimin = torch.min(self.target_modules[index].data)
+                    qmax = 2**self.bit -1
+                    qmin = 0
+                    r_scale = (rimax - rimin) / (qmax - qmin)
+                    r_zero = torch.round(qmax - rimax / r_scale)
+                    qvalue = torch.round(self.target_modules[index].data / r_scale + r_zero)
+                    ro_ = r_scale * (qvalue - r_zero)
+                    self.target_modules[index].data.copy_(ro_)
+                else:
+                    print("Unimplemented quantization methods!")
+            elif self.bit == -1:#binary_relax
+                if len(s) == 4:
+                    m = self.target_modules[index].data.norm(1, 3, keepdim=True)\
+                            .sum(2, keepdim=True).sum(1, keepdim=True).div(n)
+                elif len(s) == 2:
+                    m = self.target_modules[index].data.norm(1, 1, keepdim=True).div(n)
+                self.target_modules[index].data = \
+                        self.target_modules[index].data.sign().mul(m.expand(s))
+                self.target_modules[index].data = \
+                        self.target_modules[index].data.sign().mul(m.expand(s)).mul(1 - 0.001) + \
+                            self.saved_params[index].data.mul(0.001)
 
     def show_weight(self):
         n = self.target_modules[0].data[0].nelement()

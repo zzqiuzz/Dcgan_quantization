@@ -20,10 +20,11 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from IPython.display import HTML
 from model import dcgan
-import util
+import util 
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataroot', default="/home/zhengzhe/Data/celeb", help='path to dataset')
+parser.add_argument('--dataset',default="celeA",help="which dataset to run.")
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=8)
 parser.add_argument('--batch_size', type=int, default=64, help='input batch size')
 parser.add_argument('--image_size', type=int, default=64, help='the height / width of the input image to network')
@@ -35,33 +36,48 @@ parser.add_argument('--lr', type=float, default=0.0002, help='learning rate, def
 parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for adam. default=0.5')
 parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
 parser.add_argument('--outf', default='outputs_fwn', help='folder to output images and model checkpoints')
+parser.add_argument('--prefix', default='', help='for debug')
 parser.add_argument('--gpuid',type=int,default=4,help="gpu id")
 parser.add_argument('--validate',type=bool,default=False,help="validate model")
 parser.add_argument('--G_bnn',action='store_true',help="only binarize weight.")
 parser.add_argument('--D_q',action='store_true',help='binarize weight in the Discriminator.')
 parser.add_argument('--bit',type=int,default=8,help='Bits to quantize Discriminator.')
+parser.add_argument('--quan_type',default='default',type=str,help='methods for quantization.')
 parser.add_argument('--manualSeed', type=int, help='manual seed')
 parser.add_argument('--depth',action='store_true',help='perform depthwise convolution')
 parser.add_argument('--pretrained_D',action='store_true',help='train bwn resuming from pretrained_D models.')
 parser.add_argument('--pretrained_D_path',default='',type=str,help='path to pretrained_D model')
+parser.add_argument('--Gw_bit',default=None,type=int,help="Bits to quantize G's weights.")
+parser.add_argument('--Ga_bit',default=None,type=int,help="Bits to quantize G's activation.")
 opt = parser.parse_args()
 print(opt)
+os.environ["CUDA_VISIBLE_DEVICES"] = str(opt.gpuid)
 def main():
-    
+    quan_type = str(opt.quan_type)
+    if opt.Gw_bit is not None:
+        gw_bit = int(opt.Gw_bit)
+    if opt.Ga_bit is not None:
+        ga_bit = int(opt.Ga_bit)
     if not opt.depth: 
         if opt.G_bnn :
-            opt.outf = 'outputs_G_bnn' #only binarize G network
-            print('only binarize G')
+            if opt.Gw_bit is not None or opt.Ga_bit is not None:
+                opt.outf = 'outputs_G_bnn_' + str(opt.Gw_bit) + '_' + str(opt.Ga_bit)#extra
+                print('We quantize weights and activation in %d and %d bits respectively.' % (gw_bit,ga_bit))
+            else:
+                opt.outf = 'outputs_G_bnn' #only binarize G network
+                gw_bit = 1
+                print('Binarize both weights and activation in G.')
             if opt.pretrained_D:
                 opt.outf = 'outputs_G_bnn_pretrained_D'#binarize G but D pretrained_D and fixed
                 print('binarize G with D pretrained and fixed.')
             if opt.D_q:
-                opt.outf = 'outputs_G_bnn_D_q'
-                print("binarize G with D quantized.")
+                opt.outf = opt.outf + '_D_q_' + str(opt.bit)
+                print("quantize G with D quantized.")
     elif opt.depth:
         opt.outf = 'outputs_G_fwn_depth'
         if opt.G_bnn:
-            opt.outf = 'outputs_G_bnn_D_fwn_depth'
+            if opt.Gw_bit is not None or opt.Ga_bit is not None:
+                opt.outf = 'outputs_G_bnn_depth_' + str(opt.Gw_bit) + '_' + str(opt.Ga_bit)
             if opt.pretrained_D:
                 opt.outf = 'outputs_G_bnn_pretrained_D_depth'
             if opt.D_q:
@@ -69,6 +85,7 @@ def main():
         else:
             if opt.D_q:
                 opt.outf = 'outputs_G_fwn_D_q_depth'
+    opt.outf = str(opt.prefix) + opt.dataset + '_' + opt.outf
     if not os.path.exists(opt.outf):
         os.system('mkdir {0}'.format(opt.outf))
     if opt.pretrained_D:
@@ -84,18 +101,44 @@ def main():
     grad_data = []    
     layer_name = 'conv_dw2'
     nc = 3     
-    dataset = dset.ImageFolder(root=opt.dataroot,
-                               transform=transforms.Compose([
-                                   transforms.Resize(opt.image_size),
-                                   transforms.CenterCrop(opt.image_size),
-                                   transforms.ToTensor(),
-                                   transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                               ]))
+    if opt.dataset == 'celeA':
+        dataset = dset.ImageFolder(root=opt.dataroot,
+                                   transform=transforms.Compose([
+                                       transforms.Resize(opt.image_size),
+                                       transforms.CenterCrop(opt.image_size),
+                                       transforms.ToTensor(),
+                                       transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                                   ]))
+    elif opt.dataset == 'cifar10':
+        dataset = dset.CIFAR10(root=opt.dataroot,download=True,
+                                   transform=transforms.Compose([
+                                       transforms.Resize(opt.image_size),
+                                       transforms.ToTensor(),
+                                       transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                                   ]))
+    elif opt.dataset == 'mnist':
+        dataset = dset.MNIST(root=opt.dataroot,download=True,
+                                   transform=transforms.Compose([
+                                       transforms.Resize(opt.image_size),
+                                       transforms.ToTensor(),
+                                       transforms.Normalize((0.5,), (0.5,)),
+                                   ]))
+        nc = 1 
+    elif opt.dataset == 'lsun':
+        dataset = dset.LSUN(root=opt.dataroot,classes=['bedroom_train'],
+                                   transform=transforms.Compose([
+                                       transforms.CenterCrop(opt.image_size),
+                                       transforms.Resize(opt.image_size),
+                                       transforms.ToTensor(),
+                                       transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                                   ]))
+    assert dataset
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size,
                                              shuffle=True, num_workers=opt.workers)
-    id = 'cuda:' + str(opt.gpuid)
-    device = torch.device(id if (torch.cuda.is_available() and opt.ngpu > 0) else "cpu")
-    
+    #id = 'cuda:' + str(opt.gpuid)
+    #print("Gpu id: ",id)
+    #device = torch.device(id if (torch.cuda.is_available() and opt.ngpu > 0) else "cpu")
+    device = torch.device('cuda')
     # write out generator config to generate images together wth training checkpoints (.pth)
     generator_config = {"image_Size": opt.image_size, "nz": opt.nz, "nc": nc, "ngf": opt.ngf, "ngpu": opt.ngpu}
     with open(os.path.join(opt.outf, "generator_config.json"), 'w') as gcfg:
@@ -113,9 +156,9 @@ def main():
         if opt.G_bnn:
             netG = dcgan.Generator_depth(opt.ngpu,opt.nz,nc,opt.ngf,'bnn').to(device)
     elif not opt.depth:
-        netG = dcgan.Generator(opt.ngpu,opt.nz,nc,opt.ngf,'fwn').to(device)
+        netG = dcgan.Generator(opt.ngpu,opt.nz,nc,opt.ngf,'fwn').to(device)#
         if opt.G_bnn:
-            netG = dcgan.Generator(opt.ngpu,opt.nz,nc,opt.ngf,'bnn').to(device)
+            netG = dcgan.Generator(opt.ngpu,opt.nz,nc,opt.ngf,'bnn').to(device)#如果 权重1激活32 则改为fwn
     if (device.type == 'cuda') and (opt.ngpu > 1):
         netG = nn.DataParallel(netG, list(range(opt.ngpu)))
     print(netG)
@@ -139,9 +182,9 @@ def main():
     
     print(netD)
     if opt.G_bnn:
-        bin_op_G = util.Bin_G(netG,'bin_G')  
+        bin_op_G = util.Bin_G(netG,'bin_G',quan_type,gw_bit)  #
         if opt.depth:
-            bin_op_G = util.Bin_G(netG,'bin_G_depth')
+            bin_op_G = util.Bin_G(netG,'bin_G_depth',quan_type,gw_bit)
     if opt.D_q :
         bit = int(opt.bit)
         print('Quantize D with %d bits',bit)
@@ -226,8 +269,7 @@ def main():
             
             if not opt.pretrained_D:
                 if i % 50 == 0:
-                    print('[%d/%d][%d/%d]\tLoss_D: %.4f\t \
-                        Loss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
+                    print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
                           % (epoch, opt.num_epochs, i, len(dataloader),
                              errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
             else:
@@ -244,7 +286,10 @@ def main():
             if (iters % 500 == 0) or ((epoch == opt.num_epochs-1) and (i == len(dataloader)-1)):
                 with torch.no_grad():
                     fake = netG(fixed_noise).detach().cpu()
-                img_list.append(vutils.make_grid(fake, padding=2, normalize=True))                              
+                img_list.append(vutils.make_grid(fake, padding=2, normalize=True))      
+                vutils.save_image(fake.detach(),
+                    '%s/fake_samples_epoch_%03d.png' % (opt.outf, epoch),
+                    normalize=True)
             iters += 1
         
         dcgan.save_netG_checkpoint({
@@ -256,7 +301,8 @@ def main():
                     'state_dict':netD.state_dict(),
                     },opt.outf,epoch)
 
-
+    print("Training finished.")
+    
     #save grad_data to bin for analysis
     grad_data = np.array(grad_data)
     filename = opt.outf + '/grad_data_' + layer_name + '_' + str(opt.num_epochs) + '.bin'
@@ -297,8 +343,8 @@ def main():
     plt.figure(figsize=(15,15))
     plt.subplot(1,2,1)
     plt.axis("off")
-    plt.title("Real Images")
-    plt.imshow(np.transpose(vutils.make_grid(real_batch[0].to(device)[:64], padding=5, normalize=True).cpu(),(1,2,0)))
+    plt.title("Real Images") 
+    plt.imshow(np.transpose(vutils.make_grid(real_batch[0].to(device)[:64], padding=5, normalize=True).cpu(),(1,2,0))) 
     # Plot the fake images from the last epoch
     plt.subplot(1,2,2)
     plt.axis("off")
@@ -313,4 +359,5 @@ def main():
         plt.savefig(opt.outf + '/Result_fwn_' + str(opt.num_epochs) + '.jpg')
     plt.show()
 if __name__ == '__main__':
+#python dcgan_celeb.py --dataset=cifar10 --gpuid=3  --depth --dataroot=$DATA/cifar10 --num_epochs=25 --G_bnn --Gw_bit 8 --Ga_bit 4
     main()

@@ -7,6 +7,7 @@ class BinActive(torch.autograd.Function):
     '''
     Binarize the input activations and calculate the mean across channel dimension.
     '''
+    #@staticmethod
     def forward(self, input):
         self.save_for_backward(input)
         '''tmp = input[input.ge(-1).eq(input.lt(0))]
@@ -23,12 +24,12 @@ class BinActive(torch.autograd.Function):
         input[mask2] = 0.6487
         input[mask3] = 0.6487 * 2
         input[mask4] = 0.6487 * 3'''
-        '''coe = 3
-        output = torch.round(input.data.mul(coe)).div(coe)'''
+        #coe = 255
+        #output = torch.round(input.data.mul(coe)).div(coe)
         output = input.sign()
         #print(input)
         return output
-
+    #@staticmethod
     def backward(self, grad_output):
         input, = self.saved_tensors
         grad_input = grad_output.clone()
@@ -55,6 +56,17 @@ class BinConvTranspose2d(nn.Module):
         self.conv = nn.ConvTranspose2d(input_channels,output_channels, kernel_size, stride, padding, bias=False)
         self.bn = nn.BatchNorm2d(output_channels,momentum=0.99)
         
+    def forward(self,x):
+        x = BinActive()(x)
+        x = self.conv(x)
+        x = self.bn(x)
+        return x
+class BinConv2d(nn.Module):
+    def __init__(self,input_channels,output_channels,
+        kernel_size,stride,padding,bias=False):
+        super(BinConv2d,self).__init__()
+        self.conv = nn.Conv2d(input_channels,output_channels, kernel_size, stride, padding, bias=False)
+        self.bn = nn.BatchNorm2d(output_channels,momentum=0.99)
     def forward(self,x):
         x = BinActive()(x)
         x = self.conv(x)
@@ -87,6 +99,47 @@ class Generator(nn.Module):
                 ('tanh',nn.Tanh())
                 # state size. (nc) x 64 x 64
             ]))
+        elif type == 'fwn_extra':# insert 2 normal convolution layers
+            self.main = nn.Sequential(OrderedDict([
+                # input is Z, going into a convolution
+                ('conv1',nn.ConvTranspose2d( nz, ngf * 8, 4, 1, 0, bias=False)),
+                ('bn1',nn.BatchNorm2d(ngf * 8)),
+                ('relu1',nn.ReLU(True)), 
+                # state size. (ngf*8) x 4 x 4
+                ######################################
+                #insert 1 normal conv 
+                #('conv_extra1',nn.Conv2d(ngf * 8, ngf * 8, 3, 1, 1, bias=False)),
+                #('bn_extra1',nn.BatchNorm2d(ngf * 8)),
+                #('relu_extra1',nn.ReLU(True)),
+                ###########################
+                ('conv2',nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False)),
+                ('bn2',nn.BatchNorm2d(ngf * 4)),
+                ('relu2',nn.ReLU(True)), 
+                # state size. (ngf*4) x 8 x 8
+                #######################################
+                #insert 1 normal conv 
+                ('conv_extra2',nn.Conv2d(ngf * 4, ngf * 4,3,1,1,bias=False)),
+                ('bn_extra2',nn.BatchNorm2d(ngf * 4)),
+                ('relu_extra2',nn.ReLU(True)),
+                ###########################
+                ('conv3',nn.ConvTranspose2d( ngf * 4, ngf * 2, 4, 2, 1, bias=False)),
+                ('bn3',nn.BatchNorm2d(ngf * 2)),
+                ('relu3',nn.ReLU(True)),
+                # state size. (ngf*2) x 16 x 16
+                #######################################
+                #insert 1 normal conv 
+                ('conv_extra3',nn.Conv2d(ngf * 2, ngf * 2,3,1,1,bias=False)),
+                ('bn_extra3',nn.BatchNorm2d(ngf * 2)),
+                ('relu_extra3',nn.ReLU(True)),
+                ########################### 
+                ('conv4',nn.ConvTranspose2d( ngf * 2, ngf, 4, 2, 1, bias=False)),
+                ('bn4',nn.BatchNorm2d(ngf)),
+                ('relu4',nn.ReLU(True)),
+                # state size. (ngf) x 32 x 32
+                ('conv5',nn.ConvTranspose2d( ngf, nc, 4, 2, 1, bias=False)), 
+                ('tanh',nn.Tanh())
+                # state size. (nc) x 64 x 64
+            ]))
         elif type == 'bnn':
             self.main = nn.Sequential(
 			nn.ConvTranspose2d(nz,ngf * 8, 4, 1, 0, bias=False),
@@ -100,6 +153,25 @@ class Generator(nn.Module):
 			nn.ConvTranspose2d( ngf, nc, 4, 2, 1, bias=False), 
             nn.Tanh() 
         )
+        elif type == 'bnn_extra':
+            self.main = nn.Sequential(
+			nn.ConvTranspose2d(nz,ngf * 8, 4, 1, 0, bias=False),
+			nn.BatchNorm2d(ngf * 8,momentum=0.99),
+			nn.ReLU(True),
+            nn.ConvTranspose2d(ngf * 8,ngf * 4, 4, 2, 1, bias=False),
+			nn.BatchNorm2d(ngf * 4,momentum=0.99),
+			nn.ReLU(True), 
+			BinConv2d(ngf * 4, ngf * 4,3,1,1,bias=False),
+            nn.ConvTranspose2d( ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 2),
+            nn.ReLU(True),
+			BinConv2d(ngf * 2, ngf * 2,3,1,1,bias=False),
+			nn.ConvTranspose2d( ngf * 2, ngf, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf),
+            nn.ReLU(True),
+            nn.ConvTranspose2d( ngf, nc, 4, 2, 1, bias=False), 
+            nn.Tanh())
+        
 
     def forward(self, input):
         return self.main(input)
@@ -109,23 +181,26 @@ class BinActive_depth(torch.autograd.Function):
     '''
     def forward(self, input):
         self.save_for_backward(input)  
-        tmp = input[input.ge(-1).eq(input.lt(0))]
+        '''tmp = input[input.ge(-1).eq(input.lt(0))]
         input[input.ge(-1).eq(input.lt(0))]= tmp*(2+tmp)
         tmp = input[input.ge(0).eq(input.lt(1))]
         input[input.ge(0).eq(input.lt(1))]= tmp*(2-tmp)
         input[input.lt(-1)] = -1
-        input[input.gt(1)] = 1
-        return input
+        input[input.gt(1)] = 1'''
+        coe = 15
+        output = torch.round(input.data.mul(coe)).div(coe)
+        output = input.sign()
+        return output
 
     def backward(self, grad_output):
         input, = self.saved_tensors
         grad_input = grad_output.clone() 
-        mask = input.ge(-1).eq(input.lt(0))
+        '''mask = input.ge(-1).eq(input.lt(0))
         tmp = input[mask]
         grad_input[mask] *= 2 + tmp * 2 
         mask = input.ge(0).eq(input.lt(1))
         tmp = input[mask]
-        grad_input[mask] *= 2 - tmp * 2
+        grad_input[mask] *= 2 - tmp * 2'''
         grad_input[input.gt(1)] = 0
         grad_input[input.lt(-1)] = 0
         #print(grad_input)
@@ -137,7 +212,7 @@ class Residual_block(nn.Module):
         super(Residual_block,self).__init__()
         self.conv_tran_dw = nn.ConvTranspose2d(input_channels, output_channels, kernel_size, stride, padding,output_padding, groups,bias=False)
         self.bn_dw = nn.BatchNorm2d(output_channels)
-        #self.relu_dw = nn.ReLU(True)
+        self.relu_dw = nn.ReLU(True)
         self.pointwise = nn.Conv2d(output_channels,output_channels // 2,1,1,0,1,1,bias=False)
         self.bn_pw = nn.BatchNorm2d(output_channels // 2)
         self.relu_pw = nn.ReLU(True)
@@ -241,6 +316,8 @@ class Discriminator(nn.Module):
 
     def forward(self, input):
         return self.main(input)
+        '''output = self.main(input)
+        return output.view(-1, 1).squeeze(1)'''
 		
 
 def save_netG_checkpoint(state,out_folder,epoch):
